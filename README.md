@@ -14,8 +14,9 @@ A Bitcoin historical data viewer and virtual trading simulator built with Stream
 - **$10,000 Starting Portfolio**: Begin with virtual cash to practice trading
 - **Turn-Based Trading**: Execute buy, sell, or hold actions each turn
 - **Real Price Data**: Trade using actual historical Bitcoin prices
+- **Realistic Trading Fees**: 0.5% trading fee + $15-50 gas fees (scales with trade size)
 - **Smart Memory**: Remembers your preferred trade amounts
-- **Complete History**: Track all trades with detailed transaction records
+- **Complete History**: Track all trades with detailed transaction records and fee breakdowns
 
 ### 🎮 User Experience
 - **Dual Modes**: Switch between chart viewing and trading simulation
@@ -53,18 +54,23 @@ streamlit run bitcoin_trader_streamlit.py
 1. Click "Enable Trading" to enter simulation mode
 2. View your portfolio: Cash, BTC holdings, and total value
 3. Select an action: Buy, Sell, or Hold
-4. Enter your trade amount (remembers your preferences)
-5. Click "▶️ Next" to execute the trade and advance time
-6. Monitor your trading history and portfolio performance
+4. Enter your trade amount (see real-time fee estimates)
+5. Review total costs (buy) or net proceeds (sell) including fees
+6. Click "▶️ Next" to execute the trade and advance time
+7. Monitor your trading history and portfolio performance with fee details
 
 ## Trading Features
 
-- **Buy Orders**: Purchase BTC using your cash balance
-- **Sell Orders**: Convert BTC back to cash
+- **Buy Orders**: Purchase BTC using your cash balance (plus trading and gas fees)
+- **Sell Orders**: Convert BTC back to cash (minus trading and gas fees)
 - **Hold Actions**: Skip trading but advance to the next time interval
-- **Trade Validation**: Prevents trades exceeding available balances
+- **Realistic Fee Structure**:
+  - Trading fee: 0.5% of trade amount (taker fee)
+  - Gas fee: $15-50 dynamically calculated based on trade size and network conditions
+- **Trade Validation**: Prevents trades exceeding available balances (including fees)
 - **Price Execution**: First turn uses close prices, subsequent turns use open prices
-- **Comprehensive Logging**: All trades, holds, and failures are recorded
+- **Fee Transparency**: Real-time fee estimates and detailed fee breakdowns in trade history
+- **Comprehensive Logging**: All trades, holds, failures, and fee details are recorded
 
 ## Technical Details
 
@@ -80,6 +86,7 @@ streamlit run bitcoin_trader_streamlit.py
 - yfinance
 - plotly
 - pandas
+- numpy
 - pytz
 - datetime
 - random

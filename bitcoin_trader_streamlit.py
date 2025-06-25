@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import logging
 import random
+import numpy as np
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +19,43 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+def calculate_trading_fees(trade_amount, trade_type='taker'):
+    """
+    Calculate realistic trading fees for Bitcoin transactions.
+    
+    Args:
+        trade_amount: USD amount of the trade
+        trade_type: 'maker' (0.25%) or 'taker' (0.5%) fee
+    
+    Returns:
+        tuple: (trading_fee, gas_fee, total_fees)
+    """
+    # Trading fees (typical for crypto exchanges)
+    if trade_type == 'maker':
+        trading_fee_rate = 0.0025  # 0.25%
+    else:  # taker
+        trading_fee_rate = 0.005   # 0.5%
+    
+    trading_fee = trade_amount * trading_fee_rate
+    
+    # Simulate network gas fees ($15-50 range)
+    # Higher fees for larger transactions to simulate network congestion
+    base_gas = 15.0
+    if trade_amount > 5000:
+        gas_multiplier = 1 + (trade_amount - 5000) / 20000  # Increases with trade size
+        gas_multiplier = min(gas_multiplier, 3.33)  # Cap at $50
+    else:
+        gas_multiplier = 1.0
+    
+    # Add some randomness to simulate network conditions
+    random_factor = np.random.uniform(0.8, 1.2)
+    gas_fee = base_gas * gas_multiplier * random_factor
+    gas_fee = min(gas_fee, 50.0)  # Cap at $50
+    
+    total_fees = trading_fee + gas_fee
+    
+    return trading_fee, gas_fee, total_fees
 
 def main():
     st.set_page_config(
@@ -415,9 +453,13 @@ def main():
                 # Execute trading action
                 if action and action != "hold":
                     if action == "buy" and amount > 0:
-                        if amount <= st.session_state.cash_balance:
-                            btc_bought = amount / new_price
-                            st.session_state.cash_balance -= amount
+                        # Calculate fees first
+                        trading_fee, gas_fee, total_fees = calculate_trading_fees(amount, 'taker')
+                        total_cost = amount + total_fees
+                        
+                        if total_cost <= st.session_state.cash_balance:
+                            btc_bought = amount / new_price  # BTC bought with gross amount
+                            st.session_state.cash_balance -= total_cost  # Deduct gross + fees
                             st.session_state.btc_balance += btc_bought
                             
                             # Record transaction
@@ -426,7 +468,11 @@ def main():
                                 'action': 'buy',
                                 'amount': amount,
                                 'price': new_price,
-                                'btc_amount': btc_bought
+                                'btc_amount': btc_bought,
+                                'trading_fee': trading_fee,
+                                'gas_fee': gas_fee,
+                                'total_fees': total_fees,
+                                'total_cost': total_cost
                             })
                         else:
                             # Record failed transaction attempt
@@ -435,14 +481,18 @@ def main():
                                 'action': 'buy_failed',
                                 'amount': amount,
                                 'price': new_price,
-                                'error': 'Insufficient cash balance'
+                                'error': f'Insufficient cash balance (need ${total_cost:.2f} including fees)'
                             })
                     
                     elif action == "sell" and amount > 0:
                         btc_to_sell = amount / new_price
                         if btc_to_sell <= st.session_state.btc_balance:
+                            # Calculate fees on the sell amount
+                            trading_fee, gas_fee, total_fees = calculate_trading_fees(amount, 'taker')
+                            net_proceeds = amount - total_fees
+                            
                             st.session_state.btc_balance -= btc_to_sell
-                            st.session_state.cash_balance += amount
+                            st.session_state.cash_balance += net_proceeds  # Add net proceeds after fees
                             
                             # Record transaction
                             st.session_state.trading_history.append({
@@ -450,7 +500,11 @@ def main():
                                 'action': 'sell',
                                 'amount': amount,
                                 'price': new_price,
-                                'btc_amount': btc_to_sell
+                                'btc_amount': btc_to_sell,
+                                'trading_fee': trading_fee,
+                                'gas_fee': gas_fee,
+                                'total_fees': total_fees,
+                                'net_proceeds': net_proceeds
                             })
                         else:
                             # Record failed transaction attempt
@@ -592,13 +646,18 @@ def main():
             # Trade amount input
             if action != "hold":
                 if action == "buy":
-                    max_amount = st.session_state.cash_balance
-                    st.caption(f"Max: ${max_amount:,.0f}")
-                    # Use last buy amount, but cap it at available cash
+                    # Calculate max buy considering fees
+                    # Estimate fees for max amount (approximate)
+                    temp_trading_fee = st.session_state.cash_balance * 0.005
+                    temp_gas_fee = min(15.0 + (st.session_state.cash_balance / 20000) * 15.0, 50.0)
+                    estimated_fees = temp_trading_fee + temp_gas_fee
+                    max_amount = max(0, st.session_state.cash_balance - estimated_fees)
+                    st.caption(f"Max: ~${max_amount:,.0f} (after fees)")
+                    # Use last buy amount, but cap it at available cash minus fees
                     default_amount = min(st.session_state.last_buy_amount, max_amount)
                 else:  # sell
                     max_amount = current_btc_usd_value
-                    st.caption(f"Max: ${max_amount:,.0f}")
+                    st.caption(f"Max: ${max_amount:,.0f} (fees deducted from proceeds)")
                     # Use last sell amount, but cap it at available BTC value
                     default_amount = min(st.session_state.last_sell_amount, max_amount)
                 
@@ -611,6 +670,16 @@ def main():
                         step=0.01,
                         key=f"trade_amount_turn_{st.session_state.turn_number}"
                     )
+                    
+                    # Show fee estimate
+                    if trade_amount > 0:
+                        est_trading_fee, est_gas_fee, est_total_fees = calculate_trading_fees(trade_amount, 'taker')
+                        if action == "buy":
+                            st.caption(f"Est. fees: ${est_total_fees:.2f} (trading: ${est_trading_fee:.2f}, gas: ${est_gas_fee:.2f})")
+                            st.caption(f"Total cost: ${trade_amount + est_total_fees:.2f}")
+                        else:  # sell
+                            st.caption(f"Est. fees: ${est_total_fees:.2f} (trading: ${est_trading_fee:.2f}, gas: ${est_gas_fee:.2f})")
+                            st.caption(f"Net proceeds: ${trade_amount - est_total_fees:.2f}")
                     
                     # Update last amount when user changes it
                     if action == "buy":
@@ -664,9 +733,15 @@ def main():
                     # Show last 10 trades, most recent first
                     for trade in reversed(st.session_state.trading_history[-10:]):
                         if trade['action'] == 'buy':
-                            st.success(f"T{trade['turn']}: Bought {trade['btc_amount']:.4f} BTC for ${trade['amount']:.0f} @ ${trade['price']:.0f}")
+                            if 'total_fees' in trade:
+                                st.success(f"T{trade['turn']}: Bought {trade['btc_amount']:.4f} BTC for ${trade['amount']:.0f} @ ${trade['price']:.0f} (fees: ${trade['total_fees']:.2f})")
+                            else:
+                                st.success(f"T{trade['turn']}: Bought {trade['btc_amount']:.4f} BTC for ${trade['amount']:.0f} @ ${trade['price']:.0f}")
                         elif trade['action'] == 'sell':
-                            st.error(f"T{trade['turn']}: Sold {trade['btc_amount']:.4f} BTC for ${trade['amount']:.0f} @ ${trade['price']:.0f}")
+                            if 'total_fees' in trade:
+                                st.error(f"T{trade['turn']}: Sold {trade['btc_amount']:.4f} BTC for ${trade['amount']:.0f} @ ${trade['price']:.0f} (fees: ${trade['total_fees']:.2f})")
+                            else:
+                                st.error(f"T{trade['turn']}: Sold {trade['btc_amount']:.4f} BTC for ${trade['amount']:.0f} @ ${trade['price']:.0f}")
                         elif trade['action'] == 'hold':
                             st.info(f"T{trade['turn']}: Held position @ ${trade['price']:.0f}")
                         elif trade['action'] == 'buy_failed':
