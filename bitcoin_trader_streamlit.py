@@ -149,16 +149,17 @@ def main():
         if action != "hold":
             logger.info(f"Trade action: {action} ${amount:.2f}")
     
-    # Get current system time
+    # Get current system time minus one hour for default
     now = dt.datetime.now()
+    one_hour_ago = now - dt.timedelta(hours=1)
     
     # Initialize default values
-    default_date = st.session_state.get('selected_date', now.date())
-    default_hour = st.session_state.get('selected_hour', now.hour)
+    default_date = st.session_state.get('selected_date', one_hour_ago.date())
+    default_hour = st.session_state.get('selected_hour', one_hour_ago.hour)
     
     # Find closest 15-minute interval for default
     minute_options = [0, 15, 30, 45]
-    default_minute = st.session_state.get('selected_minute', min(minute_options, key=lambda x: abs(x - now.minute)))
+    default_minute = st.session_state.get('selected_minute', min(minute_options, key=lambda x: abs(x - one_hour_ago.minute)))
     default_minute_index = minute_options.index(default_minute)
     
     # Common timezone options
