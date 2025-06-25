@@ -1,0 +1,9 @@
+tkcalendar
+yfinance
+matplotlib
+mplfinance
+pandas
+pytz
+requests
+streamlit
+plotly
