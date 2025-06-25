@@ -57,6 +57,110 @@ def calculate_trading_fees(trade_amount, trade_type='taker'):
     
     return trading_fee, gas_fee, total_fees
 
+def check_and_execute_limit_orders(current_price):
+    """
+    Check if any limit orders should be executed at current price.
+    
+    Args:
+        current_price: Current BTC price in USD
+    
+    Returns:
+        list: List of executed limit orders
+    """
+    executed_orders = []
+    remaining_orders = []
+    
+    for order in st.session_state.limit_orders:
+        should_execute = False
+        
+        if order['type'] == 'buy' and current_price <= order['price']:
+            should_execute = True
+        elif order['type'] == 'sell' and current_price >= order['price']:
+            should_execute = True
+        
+        if should_execute:
+            # Execute the order
+            if order['type'] == 'buy':
+                # Calculate fees first
+                trading_fee, gas_fee, total_fees = calculate_trading_fees(order['amount'], 'maker')
+                total_cost = order['amount'] + total_fees
+                
+                if total_cost <= st.session_state.cash_balance:
+                    btc_bought = order['amount'] / current_price
+                    st.session_state.cash_balance -= total_cost
+                    st.session_state.btc_balance += btc_bought
+                    
+                    executed_orders.append({
+                        'turn': st.session_state.turn_number,
+                        'action': 'limit_buy_executed',
+                        'amount': order['amount'],
+                        'price': current_price,
+                        'limit_price': order['price'],
+                        'btc_amount': btc_bought,
+                        'trading_fee': trading_fee,
+                        'gas_fee': gas_fee,
+                        'total_fees': total_fees,
+                        'total_cost': total_cost,
+                        'order_id': order['id']
+                    })
+                else:
+                    # Order failed due to insufficient funds
+                    executed_orders.append({
+                        'turn': st.session_state.turn_number,
+                        'action': 'limit_buy_failed',
+                        'amount': order['amount'],
+                        'price': current_price,
+                        'limit_price': order['price'],
+                        'error': f'Insufficient cash balance (need ${total_cost:.2f} including fees)',
+                        'order_id': order['id']
+                    })
+            
+            elif order['type'] == 'sell':
+                btc_to_sell = order['amount'] / current_price
+                if btc_to_sell <= st.session_state.btc_balance:
+                    # Calculate fees on the sell amount
+                    trading_fee, gas_fee, total_fees = calculate_trading_fees(order['amount'], 'maker')
+                    net_proceeds = order['amount'] - total_fees
+                    
+                    st.session_state.btc_balance -= btc_to_sell
+                    st.session_state.cash_balance += net_proceeds
+                    
+                    executed_orders.append({
+                        'turn': st.session_state.turn_number,
+                        'action': 'limit_sell_executed',
+                        'amount': order['amount'],
+                        'price': current_price,
+                        'limit_price': order['price'],
+                        'btc_amount': btc_to_sell,
+                        'trading_fee': trading_fee,
+                        'gas_fee': gas_fee,
+                        'total_fees': total_fees,
+                        'net_proceeds': net_proceeds,
+                        'order_id': order['id']
+                    })
+                else:
+                    # Order failed due to insufficient BTC
+                    executed_orders.append({
+                        'turn': st.session_state.turn_number,
+                        'action': 'limit_sell_failed',
+                        'amount': order['amount'],
+                        'price': current_price,
+                        'limit_price': order['price'],
+                        'error': 'Insufficient BTC balance',
+                        'order_id': order['id']
+                    })
+        else:
+            # Keep order active
+            remaining_orders.append(order)
+    
+    # Update limit orders list to remove executed orders
+    st.session_state.limit_orders = remaining_orders
+    
+    # Add executed orders to trading history
+    st.session_state.trading_history.extend(executed_orders)
+    
+    return executed_orders
+
 def main():
     st.set_page_config(
         page_title="Bitcoin Historical Data Viewer",
@@ -115,6 +219,7 @@ def main():
         st.session_state.current_price = 0.0     # Current BTC price for calculations
         st.session_state.last_buy_amount = 1000.0  # Remember last buy amount
         st.session_state.last_sell_amount = 100.0  # Remember last sell amount
+        st.session_state.limit_orders = []       # List of active limit orders
         logger.info("Trading state initialized")
     
     # Handle turn progression ONLY if next turn was explicitly triggered
@@ -529,6 +634,11 @@ def main():
                 # Update current price after trading
                 st.session_state.current_price = new_price
                 
+                # Check and execute any limit orders that should trigger
+                executed_limit_orders = check_and_execute_limit_orders(new_price)
+                if executed_limit_orders:
+                    logger.info(f"Executed {len(executed_limit_orders)} limit orders")
+                
             else:
                 # Normal mode
                 filtered_data = data_utc[data_utc.index <= utc_dt].tail(data_points)
@@ -639,14 +749,14 @@ def main():
             # Compact trading controls
             action = st.selectbox(
                 "Action",
-                options=["hold", "buy", "sell"],
-                format_func=lambda x: x.title(),
+                options=["hold", "buy", "sell", "limit_buy", "limit_sell"],
+                format_func=lambda x: x.replace("_", " ").title(),
                 key=f"trading_action_turn_{st.session_state.turn_number}"
             )
             
-            # Trade amount input
+            # Trade amount and price inputs
             if action != "hold":
-                if action == "buy":
+                if action in ["buy", "limit_buy"]:
                     # Calculate max buy considering fees
                     # Estimate fees for max amount (approximate)
                     temp_trading_fee = st.session_state.cash_balance * 0.005
@@ -656,7 +766,7 @@ def main():
                     st.caption(f"Max: ~${max_amount:,.0f} (after fees)")
                     # Use last buy amount, but cap it at available cash minus fees
                     default_amount = min(st.session_state.last_buy_amount, max_amount)
-                else:  # sell
+                elif action in ["sell", "limit_sell"]:
                     max_amount = current_btc_usd_value
                     st.caption(f"Max: ${max_amount:,.0f} (fees deducted from proceeds)")
                     # Use last sell amount, but cap it at available BTC value
@@ -672,62 +782,169 @@ def main():
                         key=f"trade_amount_turn_{st.session_state.turn_number}"
                     )
                     
+                    # Limit price input for limit orders
+                    if action in ["limit_buy", "limit_sell"]:
+                        limit_price = st.number_input(
+                            "Limit Price ($)",
+                            min_value=0.01,
+                            value=st.session_state.current_price,
+                            step=0.01,
+                            key=f"limit_price_turn_{st.session_state.turn_number}"
+                        )
+                        
+                        if action == "limit_buy":
+                            if limit_price >= st.session_state.current_price:
+                                st.warning("⚠️ Buy limit should be below current price")
+                        else:  # limit_sell
+                            if limit_price <= st.session_state.current_price:
+                                st.warning("⚠️ Sell limit should be above current price")
+                    
                     # Show fee estimate
                     if trade_amount > 0:
-                        est_trading_fee, est_gas_fee, est_total_fees = calculate_trading_fees(trade_amount, 'taker')
-                        if action == "buy":
+                        fee_type = 'maker' if action.startswith('limit_') else 'taker'
+                        est_trading_fee, est_gas_fee, est_total_fees = calculate_trading_fees(trade_amount, fee_type)
+                        
+                        if action in ["buy", "limit_buy"]:
                             st.caption(f"Est. fees: ${est_total_fees:.2f} (trading: ${est_trading_fee:.2f}, gas: ${est_gas_fee:.2f})")
                             st.caption(f"Total cost: ${trade_amount + est_total_fees:.2f}")
-                        else:  # sell
+                        else:  # sell or limit_sell
                             st.caption(f"Est. fees: ${est_total_fees:.2f} (trading: ${est_trading_fee:.2f}, gas: ${est_gas_fee:.2f})")
                             st.caption(f"Net proceeds: ${trade_amount - est_total_fees:.2f}")
                     
                     # Update last amount when user changes it
-                    if action == "buy":
+                    if action in ["buy", "limit_buy"]:
                         st.session_state.last_buy_amount = trade_amount
-                    else:  # sell
+                    else:  # sell or limit_sell
                         st.session_state.last_sell_amount = trade_amount
                 else:
                     st.warning("No funds")
                     trade_amount = 0
             
             # Compact action buttons
-            btn1, btn2 = st.columns(2)
-            with btn1:
-                if st.button("▶️ Next", type="primary", key="next_turn_btn", use_container_width=True):
-                    # Set the trigger flag and store the action
-                    st.session_state.next_turn_triggered = True
-                    st.session_state.next_turn_action = action
-                    if action != "hold":
-                        if action == "buy":
-                            max_for_action = st.session_state.cash_balance
-                        else:  # sell
-                            max_for_action = current_btc_usd_value
-                        
-                        if max_for_action > 0:
-                            st.session_state.next_turn_amount = trade_amount
-                        else:
-                            st.session_state.next_turn_amount = 0.0
-                    logger.info(f"Next Turn button clicked - Action: {action}")
-                    st.rerun()
+            if action in ["limit_buy", "limit_sell"]:
+                # Show both buttons for limit orders
+                btn1, btn2, btn3 = st.columns(3)
+                with btn1:
+                    if st.button(f"📋 Place {action.replace('_', ' ').title()}", type="secondary", key="place_limit_btn", help=f"Place {action.replace('_', ' ')} order", use_container_width=True):
+                        # Place limit order
+                        if action != "hold" and max_amount > 0:
+                            import uuid
+                            order_id = str(uuid.uuid4())[:8]  # Short ID for display
+                            
+                            new_order = {
+                                'id': order_id,
+                                'type': action.replace('limit_', ''),
+                                'amount': trade_amount,
+                                'price': limit_price,
+                                'created_turn': st.session_state.turn_number,
+                                'created_price': st.session_state.current_price
+                            }
+                            
+                            st.session_state.limit_orders.append(new_order)
+                            
+                            # Add to trading history as pending order
+                            st.session_state.trading_history.append({
+                                'turn': st.session_state.turn_number,
+                                'action': f'limit_{action.replace("limit_", "")}_placed',
+                                'amount': trade_amount,
+                                'price': st.session_state.current_price,
+                                'limit_price': limit_price,
+                                'order_id': order_id
+                            })
+                            
+                            st.success(f"✅ {action.replace('_', ' ').title()} order placed!")
+                            logger.info(f"Limit order placed: {action} ${trade_amount} @ ${limit_price}")
+                        st.rerun()
+                
+                with btn2:
+                    if st.button("▶️ Next", type="primary", key="next_turn_btn", help="Advance turn without executing trade", use_container_width=True):
+                        # Set the trigger flag for hold action (advance turn without trading)
+                        st.session_state.next_turn_triggered = True
+                        st.session_state.next_turn_action = "hold"
+                        logger.info("Next Turn button clicked - Action: hold (from limit order screen)")
+                        st.rerun()
+                
+                with btn3:
+                    if st.button("🔄 Reset", help="Reset trading", use_container_width=True):
+                        # Reset all trading state
+                        st.session_state.cash_balance = 10000.0
+                        st.session_state.btc_balance = 0.0
+                        st.session_state.turn_number = 0
+                        st.session_state.trading_history = []
+                        st.session_state.limit_orders = []
+                        st.session_state.turn_progression_mode = False
+                        st.session_state.last_buy_amount = 1000.0
+                        st.session_state.last_sell_amount = 100.0
+                        if 'current_data_end_time' in st.session_state:
+                            del st.session_state.current_data_end_time
+                        st.success("Reset!")
+                        st.rerun()
+            else:
+                # Show normal buttons for regular actions
+                btn1, btn2 = st.columns(2)
+                with btn1:
+                    if st.button("▶️ Next", type="primary", key="action_btn", help="Execute action and advance turn", use_container_width=True):
+                        # Set the trigger flag and store the action
+                        st.session_state.next_turn_triggered = True
+                        st.session_state.next_turn_action = action
+                        if action != "hold":
+                            if action == "buy":
+                                max_for_action = st.session_state.cash_balance
+                            else:  # sell
+                                max_for_action = current_btc_usd_value
+                            
+                            if max_for_action > 0:
+                                st.session_state.next_turn_amount = trade_amount
+                            else:
+                                st.session_state.next_turn_amount = 0.0
+                        logger.info(f"Next Turn button clicked - Action: {action}")
+                        st.rerun()
+                
+                with btn2:
+                    if st.button("🔄 Reset", help="Reset trading", use_container_width=True):
+                        # Reset all trading state
+                        st.session_state.cash_balance = 10000.0
+                        st.session_state.btc_balance = 0.0
+                        st.session_state.turn_number = 0
+                        st.session_state.trading_history = []
+                        st.session_state.limit_orders = []
+                        st.session_state.turn_progression_mode = False
+                        st.session_state.last_buy_amount = 1000.0
+                        st.session_state.last_sell_amount = 100.0
+                        if 'current_data_end_time' in st.session_state:
+                            del st.session_state.current_data_end_time
+                        st.success("Reset!")
+                        st.rerun()
             
-            with btn2:
-                if st.button("🔄 Reset", help="Reset trading", use_container_width=True):
-                    # Reset all trading state
-                    st.session_state.cash_balance = 10000.0
-                    st.session_state.btc_balance = 0.0
-                    st.session_state.turn_number = 0
-                    st.session_state.trading_history = []
-                    st.session_state.turn_progression_mode = False
-                    st.session_state.last_buy_amount = 1000.0
-                    st.session_state.last_sell_amount = 100.0
-                    if 'current_data_end_time' in st.session_state:
-                        del st.session_state.current_data_end_time
-                    st.success("Reset!")
-                    st.rerun()
-            
-            # Turn info and history
+            # Turn info and active limit orders
             st.caption(f"Turn: {st.session_state.turn_number}")
+            
+            # Display active limit orders
+            if st.session_state.limit_orders:
+                with st.expander(f"📋 Active Limit Orders ({len(st.session_state.limit_orders)})", expanded=True):
+                    for order in st.session_state.limit_orders:
+                        order_type = order['type'].title()
+                        color = "🟢" if order['type'] == 'buy' else "🔴"
+                        
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.caption(f"{color} {order_type} ${order['amount']:.0f} @ ${order['price']:.0f} (T{order['created_turn']})")
+                        with col2:
+                            if st.button("❌", key=f"cancel_{order['id']}", help="Cancel order"):
+                                # Remove the order
+                                st.session_state.limit_orders = [o for o in st.session_state.limit_orders if o['id'] != order['id']]
+                                
+                                # Add cancellation to history
+                                st.session_state.trading_history.append({
+                                    'turn': st.session_state.turn_number,
+                                    'action': f'limit_{order["type"]}_cancelled',
+                                    'amount': order['amount'],
+                                    'price': st.session_state.current_price,
+                                    'limit_price': order['price'],
+                                    'order_id': order['id']
+                                })
+                                
+                                st.rerun()
             
             if st.session_state.trading_history:
                 with st.expander("Trading History", expanded=True):
@@ -749,6 +966,22 @@ def main():
                             st.warning(f"T{trade['turn']}: Buy failed - {trade['error']}")
                         elif trade['action'] == 'sell_failed':
                             st.warning(f"T{trade['turn']}: Sell failed - {trade['error']}")
+                        elif trade['action'] == 'limit_buy_placed':
+                            st.info(f"T{trade['turn']}: 📋 Buy limit placed: ${trade['amount']:.0f} @ ${trade['limit_price']:.0f} (ID: {trade['order_id']})")
+                        elif trade['action'] == 'limit_sell_placed':
+                            st.info(f"T{trade['turn']}: 📋 Sell limit placed: ${trade['amount']:.0f} @ ${trade['limit_price']:.0f} (ID: {trade['order_id']})")
+                        elif trade['action'] == 'limit_buy_executed':
+                            st.success(f"T{trade['turn']}: ✅ Limit buy executed: {trade['btc_amount']:.4f} BTC for ${trade['amount']:.0f} @ ${trade['price']:.0f} (limit: ${trade['limit_price']:.0f}, fees: ${trade['total_fees']:.2f})")
+                        elif trade['action'] == 'limit_sell_executed':
+                            st.error(f"T{trade['turn']}: ✅ Limit sell executed: {trade['btc_amount']:.4f} BTC for ${trade['amount']:.0f} @ ${trade['price']:.0f} (limit: ${trade['limit_price']:.0f}, fees: ${trade['total_fees']:.2f})")
+                        elif trade['action'] == 'limit_buy_failed':
+                            st.warning(f"T{trade['turn']}: ❌ Limit buy failed - {trade['error']} (ID: {trade['order_id']})")
+                        elif trade['action'] == 'limit_sell_failed':
+                            st.warning(f"T{trade['turn']}: ❌ Limit sell failed - {trade['error']} (ID: {trade['order_id']})")
+                        elif trade['action'] == 'limit_buy_cancelled':
+                            st.info(f"T{trade['turn']}: ❌ Buy limit cancelled: ${trade['amount']:.0f} @ ${trade['limit_price']:.0f} (ID: {trade['order_id']})")
+                        elif trade['action'] == 'limit_sell_cancelled':
+                            st.info(f"T{trade['turn']}: ❌ Sell limit cancelled: ${trade['amount']:.0f} @ ${trade['limit_price']:.0f} (ID: {trade['order_id']})")
         
         else:
             st.info("Enable trading to start with $10,000")

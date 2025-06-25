@@ -31,7 +31,8 @@ pip install -r requirements.txt
 ### Key Features
 - **Dual Modes**: Chart viewing with auto-refresh OR turn-based trading mode
 - **Virtual Trading**: $10,000 starting portfolio with buy/sell/hold actions
-- **Realistic Trading Fees**: 0.5% trading fee + $15-50 gas fees (scales with trade size)
+- **Limit Orders**: Place buy/sell orders that execute automatically when price conditions are met
+- **Realistic Trading Fees**: 0.5% taker fee (market orders) + 0.25% maker fee (limit orders) + $15-50 gas fees
 - **Turn Progression**: Manual time advancement with sliding 5-hour data window
 - **Trade Memory**: Remembers last buy ($1,000 default) and sell amounts
 - **Random Date Selection**: Pick random date/time within past 45 days
@@ -42,23 +43,27 @@ pip install -r requirements.txt
 ### Key Components
 - **Data Fetching**: Uses yfinance with configurable intervals and sliding window logic
 - **Trading Engine**: Turn-based execution with first/subsequent turn handling
-- **Fee Calculator**: Realistic trading fees (0.5% taker fee) + dynamic gas fees ($15-50)
+- **Limit Order Engine**: Automatic execution of pending orders when price conditions are met
+- **Fee Calculator**: Realistic trading fees (0.5% taker, 0.25% maker) + dynamic gas fees ($15-50)
 - **Portfolio Management**: Real-time balance calculations with fee validation
 - **Time Management**: Auto-detects user timezone with manual progression in trading mode
 - **Visualization**: Plotly candlestick charts with turn-specific titles
-- **Session State**: Maintains trading state, balances, history, and preferences
+- **Session State**: Maintains trading state, balances, history, active orders, and preferences
 
 ### Trading System
 - **Portfolio**: Starts with $10,000 cash, 0 BTC
-- **Actions**: Buy (uses cash + fees), Sell (receives proceeds - fees), Hold (no action)
+- **Market Actions**: Buy (uses cash + fees), Sell (receives proceeds - fees), Hold (no action)
+- **Limit Orders**: Limit Buy (execute when price drops to/below target), Limit Sell (execute when price rises to/above target)
 - **Fees Structure**: 
-  - Trading fee: 0.5% of trade amount (taker fee)
+  - Market orders: 0.5% trading fee (taker fee) + $15-50 gas fee
+  - Limit orders: 0.25% trading fee (maker fee) + $15-50 gas fee
   - Gas fee: $15-50 dynamically calculated based on trade size and randomness
   - Buy trades: Total cost = trade amount + trading fee + gas fee
   - Sell trades: Net proceeds = trade amount - trading fee - gas fee
 - **Pricing**: First turn uses close price, subsequent turns use open price of new intervals
+- **Order Management**: View active limit orders, cancel orders, automatic execution when conditions are met
 - **Validation**: Prevents insufficient balance trades (including fees), records failures
-- **History**: Persistent log of all trades with color-coded success/failure indicators and fee breakdown
+- **History**: Persistent log of all trades with color-coded success/failure indicators and comprehensive fee breakdown
 
 ### Data Flow
 
@@ -70,19 +75,22 @@ pip install -r requirements.txt
 
 #### Trading Mode:
 1. User enables trading mode (disables auto-refresh)
-2. Selects action (buy/sell/hold) and amount
-3. Application shows fee estimates and total cost/net proceeds
-4. Clicks "Next Turn" to execute trade and advance time
-5. New interval data fetched, chart slides forward one interval
-6. Trade executes at new interval's price with fees deducted, balances update
-7. Chart title updates to show current time window
+2. Selects action (buy/sell/hold/limit_buy/limit_sell) and amount
+3. For limit orders: Sets target price and places order without advancing turn
+4. For market orders: Shows fee estimates and total cost/net proceeds
+5. Clicks "Next Turn" to execute market trade (or advance time for limit orders)
+6. New interval data fetched, chart slides forward one interval
+7. Trade executes at new interval's price with fees deducted, balances update
+8. Limit orders automatically execute if price conditions are met
+9. Chart title updates to show current time window
 
 ### UI Layout
 - **Compact Design**: 5-column control layout with inline status
 - **Split View**: Chart (3.5 width) | Trading Panel (1.5 width)
-- **Trading Panel**: Portfolio metrics, action controls, fee estimates, persistent history
-- **Smart Inputs**: Remember user preferences, validate against available funds including fees
+- **Trading Panel**: Portfolio metrics, action controls, limit order management, fee estimates, persistent history
+- **Smart Inputs**: Remember user preferences, validate against available funds including fees, price validation for limit orders
 - **Fee Display**: Real-time fee estimates showing trading fees, gas fees, and total costs
+- **Order Management**: Active limit orders display with cancel functionality and automatic execution notifications
 
 ### Session State Management
 Critical state variables:
@@ -91,6 +99,7 @@ Critical state variables:
 - `current_price`: Latest BTC price for calculations
 - `turn_number`: Current turn counter
 - `trading_history`: Persistent list of all actions
+- `limit_orders`: List of active limit orders with execution logic
 - `last_buy_amount`, `last_sell_amount`: User preference memory
 - `current_data_end_time`: Sliding window position for turn progression
 - `cached_chart_data`: Preserves chart when toggling trading mode
@@ -100,8 +109,10 @@ Core libraries: streamlit, yfinance, plotly, pandas, pytz, random, numpy
 See requirements.txt for complete list.
 
 ## Recent Changes
-- **Trading Fees Implementation**: Added realistic trading fees with `calculate_trading_fees()` function
-- **Fee Structure**: 0.5% trading fee (taker) + dynamic gas fees ($15-50 based on trade size)
-- **UI Enhancements**: Real-time fee estimates, adjusted max trade amounts, fee breakdown in history
-- **Portfolio Validation**: Enhanced balance checks to include total costs with fees
-- **Trade History**: Extended to include fee details (trading_fee, gas_fee, total_fees, total_cost/net_proceeds)
+- **Limit Order System**: Added comprehensive limit order functionality with automatic execution
+- **Enhanced Fee Structure**: 0.5% taker fee (market orders) + 0.25% maker fee (limit orders) + dynamic gas fees ($15-50)
+- **Order Management**: Active limit orders display, cancellation, and execution tracking
+- **UI Enhancements**: Limit price inputs, price validation warnings, enhanced action buttons
+- **Execution Engine**: `check_and_execute_limit_orders()` function runs each turn to process pending orders
+- **Trading History**: Extended to include limit order placement, execution, cancellation, and detailed fee breakdowns
+- **Session State**: Added `limit_orders` list to maintain active orders across turns
